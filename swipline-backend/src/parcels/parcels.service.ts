@@ -3,9 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Parcel } from 'src/database/entities/parcel.entity';
 import { TrackingHistory } from 'src/database/entities/tracking-history.entity';
-import { CreateParcelDto } from './dtos/create-parcel.dto';
-import { NotificationsService } from '../notifications/email.service';
-import { EmailTemplate } from '../../common/templates/email.template';
+import { CreateParcelDto } from './dto/create-parcel.dto';
+import { UpdateLocationDto } from './dto/update-location.dto';
+import { EmailService } from 'src/notifications/email.service';
+import { ParcelStatus } from 'src/common/enums';
 
 @Injectable()
 export class ParcelsService {
@@ -14,11 +15,10 @@ export class ParcelsService {
     private parcelsRepository: Repository<Parcel>,
     @InjectRepository(TrackingHistory)
     private trackingRepository: Repository<TrackingHistory>,
-    private notificationsService: NotificationsService,
+    private emailService: EmailService,
   ) {}
 
   async createParcel(createParcelDto: CreateParcelDto): Promise<Parcel> {
-    // Calculate shipping cost
     const shippingCost = this.calculateShippingCost(
       createParcelDto.weight,
       createParcelDto.destinationCountry,
@@ -34,7 +34,7 @@ export class ParcelsService {
       ...createParcelDto,
       shippingCost,
       borderFee,
-      status: 'pending',
+      status: ParcelStatus.PENDING,
       currentLocation: 'Warehouse - Origin',
     });
 
@@ -48,11 +48,11 @@ export class ParcelsService {
     });
 
     // Send tracking ID email
-    await this.notificationsService.sendEmail({
-      to: savedParcel.senderEmail,
-      subject: 'Your Consignment Tracking Details',
-      html: EmailTemplate.trackingCreated(savedParcel),
-    });
+    // await this.emailService.sendEmail({
+    //   to: savedParcel.senderEmail,
+    //   subject: 'Your Consignment Tracking Details',
+    //   html: EmailTemplate.trackingCreated(savedParcel),
+    // });
 
     return savedParcel;
   }
@@ -76,44 +76,48 @@ export class ParcelsService {
   }
 
   async updateParcelLocation(
-    parcelId: string,
-    location: string,
-    status: string,
-    coordinates?: { lat: number; lng: number },
-    description?: string,
+    trackingId: string,
+    updateLocationDto: UpdateLocationDto,
   ) {
-    const parcel = await this.parcelsRepository.findOneBy({ id: parcelId });
+    // First find parcel by trackingId
+    const parcel = await this.parcelsRepository.findOne({
+      where: { trackingId },
+    });
 
     if (!parcel) {
       throw new NotFoundException('Parcel not found');
     }
 
     // Update parcel
-    parcel.currentLocation = location;
-    parcel.status = status;
-    if (coordinates) {
-      parcel.coordinates = `POINT(${coordinates.lng} ${coordinates.lat})`;
+    parcel.currentLocation = updateLocationDto.location;
+    parcel.status = updateLocationDto.status as ParcelStatus;
+
+    if (updateLocationDto.coordinates) {
+      // Assuming coordinates is stored as string "POINT(lng lat)" in database
+      // If using PostgreSQL point type
+      parcel.coordinates = updateLocationDto.coordinates;
     }
 
     await this.parcelsRepository.save(parcel);
 
     // Create tracking history entry
-    await this.createTrackingHistory(parcelId, {
-      status,
-      location,
-      coordinates: coordinates
-        ? `POINT(${coordinates.lng} ${coordinates.lat})`
-        : null,
-      description,
+    await this.createTrackingHistory(parcel.id, {
+      status: updateLocationDto.status,
+      location: updateLocationDto.location,
+      coordinates: updateLocationDto.coordinates,
+      description: updateLocationDto.description,
     });
 
     // Send notification if status changed significantly
     if (
       ['at_border', 'border_cleared', 'out_for_delivery', 'delivered'].includes(
-        status,
+        updateLocationDto.status,
       )
     ) {
-      await this.notificationsService.sendStatusUpdate(parcel, status);
+      await this.emailService.sendStatusUpdate(
+        parcel,
+        updateLocationDto.status,
+      );
     }
 
     return parcel;
@@ -124,14 +128,14 @@ export class ParcelsService {
     data: Partial<TrackingHistory>,
   ): Promise<TrackingHistory> {
     const history = this.trackingRepository.create({
-      parcelId,
+      parcel: { id: parcelId },
       ...data,
     });
+
     return await this.trackingRepository.save(history);
   }
 
   private calculateShippingCost(weight: number, destination: string): number {
-    // Simplified calculation - in production, integrate with shipping API
     const baseCost = 10;
     const weightCost = weight * 2;
     const destinationMultiplier = this.getCountryMultiplier(destination);

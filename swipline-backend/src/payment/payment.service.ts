@@ -1,15 +1,22 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import Stripe from 'stripe';
-import { Payment } from '../../database/entities/payment.entity';
-import { Parcel } from '../../database/entities/parcel.entity';
+import { Payment } from '../database/entities/payment.entity';
+import { Parcel } from '../database/entities/parcel.entity';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { ParcelStatus } from 'src/common/enums';
 
 @Injectable()
 export class PaymentsService {
   private stripe: Stripe;
+  private readonly logger = new Logger(PaymentsService.name);
 
   constructor(
     private configService: ConfigService,
@@ -18,9 +25,12 @@ export class PaymentsService {
     @InjectRepository(Parcel)
     private parcelsRepository: Repository<Parcel>,
   ) {
-    this.stripe = new Stripe(this.configService.get('stripe.secretKey'), {
-      apiVersion: '2023-10-16',
-    });
+    const stripeSecretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    if (!stripeSecretKey) {
+      throw new Error('STRIPE_SECRET_KEY is not configured');
+    }
+
+    this.stripe = new Stripe(stripeSecretKey);
   }
 
   async createBorderPayment(createPaymentDto: CreatePaymentDto) {
@@ -29,14 +39,18 @@ export class PaymentsService {
     });
 
     if (!parcel) {
-      throw new BadRequestException('Parcel not found');
+      throw new NotFoundException('Parcel not found');
     }
 
     if (parcel.borderFeePaid) {
       throw new BadRequestException('Border fee already paid');
     }
 
-    // Create payment intent
+    if (parcel.status !== 'at_border') {
+      throw new BadRequestException('Parcel is not at border yet');
+    }
+
+    // Create Stripe payment intent
     const paymentIntent = await this.stripe.paymentIntents.create({
       amount: Math.round(parcel.borderFee * 100), // Convert to cents
       currency: 'usd',
@@ -68,11 +82,18 @@ export class PaymentsService {
       paymentId: payment.id,
       amount: parcel.borderFee,
       currency: 'usd',
+      trackingId: parcel.trackingId,
     };
   }
 
   async handleWebhook(signature: string, payload: Buffer) {
-    const webhookSecret = this.configService.get('stripe.webhookSecret');
+    const webhookSecret = this.configService.get<string>(
+      'STRIPE_WEBHOOK_SECRET',
+    );
+
+    if (!webhookSecret) {
+      throw new Error('STRIPE_WEBHOOK_SECRET is not configured');
+    }
 
     let event: Stripe.Event;
 
@@ -83,9 +104,11 @@ export class PaymentsService {
         webhookSecret,
       );
     } catch (err) {
+      this.logger.error(`Webhook Error: ${err.message}`);
       throw new BadRequestException(`Webhook Error: ${err.message}`);
     }
 
+    // Handle specific event types
     switch (event.type) {
       case 'payment_intent.succeeded':
         await this.handlePaymentSuccess(
@@ -97,44 +120,48 @@ export class PaymentsService {
           event.data.object as Stripe.PaymentIntent,
         );
         break;
+      case 'payment_intent.created':
+        this.logger.log(`Payment intent created: ${event.data.object.id}`);
+        break;
+      default:
+        this.logger.log(`Unhandled event type: ${event.type}`);
     }
 
-    return { received: true };
+    return { received: true, eventType: event.type };
   }
 
   private async handlePaymentSuccess(paymentIntent: Stripe.PaymentIntent) {
+    this.logger.log(`Payment succeeded: ${paymentIntent.id}`);
+
     const payment = await this.paymentsRepository.findOne({
       where: { paymentId: paymentIntent.id },
       relations: ['parcel'],
     });
 
     if (payment) {
+      // Update payment status
       payment.status = 'completed';
       payment.completedAt = new Date();
-      payment.paymentMethod = {
-        type: paymentIntent.payment_method_types[0],
-        last4:
-          paymentIntent.charges.data[0]?.payment_method_details?.card?.last4,
-        brand:
-          paymentIntent.charges.data[0]?.payment_method_details?.card?.brand,
-      };
 
       await this.paymentsRepository.save(payment);
 
-      // Update parcel border fee status
-      if (payment.type === 'border_fee') {
+      // Update parcel status if it's a border fee payment
+      if (payment.type === 'border_fee' && payment.parcel) {
         await this.parcelsRepository.update(payment.parcelId, {
           borderFeePaid: true,
-          status: 'border_cleared',
+          status: ParcelStatus.BORDER_CLEARED,
         });
 
-        // Add tracking history
-        // You'll need to inject tracking service here
+        this.logger.log(
+          `Parcel ${payment.parcel.trackingId} border fee paid and cleared`,
+        );
       }
     }
   }
 
   private async handlePaymentFailure(paymentIntent: Stripe.PaymentIntent) {
+    this.logger.error(`Payment failed: ${paymentIntent.id}`);
+
     const payment = await this.paymentsRepository.findOne({
       where: { paymentId: paymentIntent.id },
     });
@@ -143,5 +170,18 @@ export class PaymentsService {
       payment.status = 'failed';
       await this.paymentsRepository.save(payment);
     }
+  }
+
+  async getPaymentStatus(paymentId: string) {
+    const payment = await this.paymentsRepository.findOne({
+      where: { id: paymentId },
+      relations: ['parcel'],
+    });
+
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
+    }
+
+    return payment;
   }
 }

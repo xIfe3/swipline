@@ -11,6 +11,7 @@ import { User } from './user.entity';
 import { TrackingHistory } from './tracking-history.entity';
 import { Payment } from './payment.entity';
 import { ParcelStatus } from 'src/common/enums';
+import { StringHelper } from 'src/common/helpers/string.helper';
 
 @Entity('parcels')
 export class Parcel extends BaseEntity {
@@ -65,8 +66,8 @@ export class Parcel extends BaseEntity {
   @Column({ nullable: true })
   currentLocation: string;
 
-  @Column({ type: 'point', spatialFeatureType: 'Point', nullable: true })
-  coordinates: { lat: number; lan: number };
+  @Column({ type: 'jsonb', nullable: true })
+  coordinates: { lat: number; lng: number };
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   shippingCost: number;
@@ -91,12 +92,7 @@ export class Parcel extends BaseEntity {
 
   @BeforeInsert()
   generateTrackingId() {
-    const prefix = 'SWP';
-    const date = new Date();
-    const year = date.getFullYear().toString().slice(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const random = Math.random().toString(36).substring(2, 8).toUpperCase();
-    this.trackingId = `${prefix}${year}${month}${random}`;
+    this.trackingId = StringHelper.generateTrackingId();
   }
 
   @BeforeInsert()

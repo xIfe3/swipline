@@ -15,7 +15,10 @@ export class TrackingHistory extends BaseEntity {
   location: string;
 
   @Column({ type: 'jsonb', nullable: true })
-  coordinates: string;
+  coordinates: {
+    lat: number;
+    lng: number;
+  };
 
   @Column({ nullable: true })
   description: string;

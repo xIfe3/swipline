@@ -1,0 +1,8 @@
+venv/
+.env
+node_modules/
+__pycache__/
+/.next/
+/out/
+/build
+.vercel

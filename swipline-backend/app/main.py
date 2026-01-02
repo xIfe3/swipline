@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import parcels, payments, tracking, users
 from app.database import engine
 from app import models
+from datetime import datetime
 
 # Create tables
 models.Base.metadata.create_all(bind=engine)
@@ -11,6 +12,8 @@ app = FastAPI(
     title="Consignment Tracking API",
     description="API for parcel tracking and border payments",
     version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # CORS
@@ -36,7 +39,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "timestamp": "2024-01-01T00:00:00Z"}
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
 if __name__ == "__main__":

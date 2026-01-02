@@ -1,15 +1,15 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import Navbar from "./components/layout/Navbar";
 import { Toaster } from "react-hot-toast";
-
-const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "SwiftTrack - Parcel Tracking & Border Payments",
   description:
     "Track your parcels across borders with real-time updates and secure border fee payments",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({
@@ -19,9 +19,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body
-        className={`${inter.className} min-h-screen bg-gradient-to-b from-primary-50 to-white`}
-      >
+      <body className="min-h-screen from-primary-50 to-white">
         <Navbar />
         <main className="pt-16">{children}</main>
         <Toaster

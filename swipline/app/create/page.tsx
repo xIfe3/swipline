@@ -7,8 +7,6 @@ import {
   User,
   MapPin,
   DollarSign,
-  Scale,
-  Ruler,
   FileText,
   ChevronRight,
 } from "lucide-react";

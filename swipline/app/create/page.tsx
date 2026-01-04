@@ -6,193 +6,312 @@ import {
   Package,
   User,
   MapPin,
-  DollarSign,
+  Scale,
+  Ruler,
   FileText,
-  ChevronRight,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { apiService, CreateParcelRequest } from "@/lib/api";
 
-interface SenderInfo {
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  city: string;
-  country: string;
-  postalCode: string;
-}
-
-interface RecipientInfo {
-  name: string;
-  email: string;
-  phone: string;
-  address: string;
-  city: string;
-  country: string;
-  postalCode: string;
-}
-
-interface PackageInfo {
+// Types matching your FastAPI schemas
+interface ContentItem {
   description: string;
-  weight: number;
-  weightUnit: "kg" | "lb";
+  quantity: number;
+  value: number;
+}
+
+interface Dimensions {
   length: number;
   width: number;
   height: number;
-  dimensionUnit: "cm" | "in";
-  value: number;
-  currency: "USD" | "CAD" | "EUR";
-  category: string;
+  unit: "cm" | "in";
 }
 
-interface ServiceInfo {
-  serviceType: "standard" | "express" | "priority";
-  insurance: boolean;
-  signatureRequired: boolean;
-  customsDeclaration: boolean;
+interface ParcelFormData {
+  // Sender info
+  sender_name: string;
+  sender_email: string;
+  sender_phone: string;
+  sender_address?: string;
+
+  // Recipient info
+  recipient_name: string;
+  recipient_email: string;
+  recipient_phone: string;
+  recipient_address: string;
+  destination_country: string;
+
+  // Package details
+  weight: number;
+  dimensions: Dimensions;
+  contents: ContentItem[];
 }
 
 export default function CreatePage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [activeContentIndex, setActiveContentIndex] = useState<number | null>(
+    null
+  );
 
-  const [sender, setSender] = useState<SenderInfo>({
-    name: "",
-    email: "",
-    phone: "",
-    address: "",
-    city: "",
-    country: "United States",
-    postalCode: "",
-  });
+  // Form state matching your CreateParcel schema
+  const [formData, setFormData] = useState<ParcelFormData>({
+    // Sender info
+    sender_name: "",
+    sender_email: "",
+    sender_phone: "",
+    sender_address: "",
 
-  const [recipient, setRecipient] = useState<RecipientInfo>({
-    name: "",
-    email: "",
-    phone: "",
-    address: "",
-    city: "",
-    country: "Canada",
-    postalCode: "",
-  });
+    // Recipient info
+    recipient_name: "",
+    recipient_email: "",
+    recipient_phone: "",
+    recipient_address: "",
+    destination_country: "CA", // Default to Canada
 
-  const [packageInfo, setPackageInfo] = useState<PackageInfo>({
-    description: "",
+    // Package details
     weight: 1,
-    weightUnit: "kg",
-    length: 30,
-    width: 20,
-    height: 15,
-    dimensionUnit: "cm",
-    value: 100,
-    currency: "USD",
-    category: "documents",
+    dimensions: {
+      length: 30,
+      width: 20,
+      height: 15,
+      unit: "cm" as const,
+    },
+    contents: [
+      {
+        description: "",
+        quantity: 1,
+        value: 0,
+      },
+    ],
   });
 
-  const [service, setService] = useState<ServiceInfo>({
-    serviceType: "express",
-    insurance: true,
-    signatureRequired: true,
-    customsDeclaration: true,
-  });
-
-  const handleSenderChange = (field: keyof SenderInfo, value: string) => {
-    setSender({ ...sender, [field]: value });
+  const handleInputChange = (field: keyof ParcelFormData, value: any) => {
+    setFormData((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
   };
 
-  const handleRecipientChange = (field: keyof RecipientInfo, value: string) => {
-    setRecipient({ ...recipient, [field]: value });
+  const handleDimensionsChange = (field: keyof Dimensions, value: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      dimensions: {
+        ...prev.dimensions,
+        [field]: value,
+      },
+    }));
   };
 
-  const handlePackageChange = (field: keyof PackageInfo, value: any) => {
-    setPackageInfo({ ...packageInfo, [field]: value });
+  const handleUnitChange = (unit: "cm" | "in") => {
+    // Convert dimensions when unit changes
+    const conversionFactor = unit === "cm" ? 2.54 : 1 / 2.54;
+    setFormData((prev) => ({
+      ...prev,
+      dimensions: {
+        length: parseFloat(
+          (prev.dimensions.length * conversionFactor).toFixed(2)
+        ),
+        width: parseFloat(
+          (prev.dimensions.width * conversionFactor).toFixed(2)
+        ),
+        height: parseFloat(
+          (prev.dimensions.height * conversionFactor).toFixed(2)
+        ),
+        unit,
+      },
+    }));
   };
 
-  const handleServiceChange = (field: keyof ServiceInfo, value: any) => {
-    setService({ ...service, [field]: value });
+  const handleContentChange = (
+    index: number,
+    field: keyof ContentItem,
+    value: any
+  ) => {
+    const newContents = [...formData.contents];
+    newContents[index] = {
+      ...newContents[index],
+      [field]: value,
+    };
+    setFormData((prev) => ({
+      ...prev,
+      contents: newContents,
+    }));
   };
 
-  const calculatePrice = () => {
-    // Simple pricing calculation
-    let basePrice = 25;
+  const addContentItem = () => {
+    setFormData((prev) => ({
+      ...prev,
+      contents: [...prev.contents, { description: "", quantity: 1, value: 0 }],
+    }));
+  };
 
-    // Weight-based pricing
-    if (packageInfo.weight > 5) basePrice += (packageInfo.weight - 5) * 2;
+  const removeContentItem = (index: number) => {
+    if (formData.contents.length > 1) {
+      const newContents = formData.contents.filter((_, i) => i !== index);
+      setFormData((prev) => ({
+        ...prev,
+        contents: newContents,
+      }));
+    }
+  };
 
-    // Service type multiplier
-    if (service.serviceType === "express") basePrice *= 1.5;
-    if (service.serviceType === "priority") basePrice *= 2;
+  const validateStep = (stepNum: number): boolean => {
+    switch (stepNum) {
+      case 1:
+        // Validate sender and recipient info
+        if (
+          !formData.sender_name.trim() ||
+          !formData.sender_email.trim() ||
+          !formData.sender_phone.trim() ||
+          !formData.recipient_name.trim() ||
+          !formData.recipient_email.trim() ||
+          !formData.recipient_phone.trim() ||
+          !formData.recipient_address.trim()
+        ) {
+          toast.error(
+            "Please fill in all required sender and recipient information"
+          );
+          return false;
+        }
 
-    // Insurance
-    if (service.insurance) basePrice += packageInfo.value * 0.01;
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (
+          !emailRegex.test(formData.sender_email) ||
+          !emailRegex.test(formData.recipient_email)
+        ) {
+          toast.error("Please enter valid email addresses");
+          return false;
+        }
 
-    // International premium
-    if (sender.country !== recipient.country) basePrice += 15;
+        // Validate phone (basic validation)
+        const phoneRegex = /^[\d\s\+\-\(\)]{10,}$/;
+        if (
+          !phoneRegex.test(formData.sender_phone.replace(/\D/g, "")) ||
+          !phoneRegex.test(formData.recipient_phone.replace(/\D/g, ""))
+        ) {
+          toast.error("Please enter valid phone numbers");
+          return false;
+        }
+        return true;
 
-    return basePrice.toFixed(2);
+      case 2:
+        // Validate package details
+        if (formData.weight <= 0) {
+          toast.error("Weight must be greater than 0");
+          return false;
+        }
+
+        if (
+          formData.dimensions.length <= 0 ||
+          formData.dimensions.width <= 0 ||
+          formData.dimensions.height <= 0
+        ) {
+          toast.error("All dimensions must be greater than 0");
+          return false;
+        }
+
+        // Validate contents
+        for (const content of formData.contents) {
+          if (!content.description.trim()) {
+            toast.error("Please provide description for all items");
+            return false;
+          }
+          if (content.quantity <= 0) {
+            toast.error("Quantity must be greater than 0");
+            return false;
+          }
+          if (content.value < 0) {
+            toast.error("Value cannot be negative");
+            return false;
+          }
+        }
+        return true;
+
+      default:
+        return true;
+    }
+  };
+
+  const handleNextStep = () => {
+    if (validateStep(step)) {
+      setStep(step + 1);
+    }
+  };
+
+  const handlePrevStep = () => {
+    setStep(step - 1);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Validate current step
-    if (
-      step === 1 &&
-      (!sender.name || !sender.address || !recipient.name || !recipient.address)
-    ) {
-      toast.error(
-        "Please fill in all required sender and recipient information"
+    if (!validateStep(step)) return;
+
+    if (step < 3) {
+      handleNextStep();
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Prepare data for API
+      const parcelData: CreateParcelRequest = {
+        sender_name: formData.sender_name,
+        sender_email: formData.sender_email,
+        sender_phone: formData.sender_phone,
+        sender_address: formData.sender_address || undefined,
+        recipient_name: formData.recipient_name,
+        recipient_email: formData.recipient_email,
+        recipient_phone: formData.recipient_phone,
+        recipient_address: formData.recipient_address,
+        destination_country: formData.destination_country,
+        weight: formData.weight,
+        dimensions: formData.dimensions,
+        contents: formData.contents,
+      };
+
+      console.log("Submitting parcel:", parcelData);
+
+      // Call your FastAPI backend
+      const response = await apiService.createParcel(parcelData);
+
+      toast.success(
+        `Shipment created! Tracking number: ${response.tracking_id}`
       );
-      return;
-    }
 
-    if (step === 2 && (!packageInfo.description || packageInfo.value <= 0)) {
-      toast.error("Please provide package description and value");
-      return;
-    }
-
-    // Move to next step or submit
-    if (step < 4) {
-      setStep(step + 1);
-    } else {
-      setLoading(true);
-
-      // Simulate API call to your create shipment endpoint
-      setTimeout(() => {
-        const trackingNumber = `ST${Math.floor(
-          100000000 + Math.random() * 900000000
-        )}`;
-
-        toast.success(`Shipment created! Tracking number: ${trackingNumber}`);
-        setLoading(false);
-        router.push(`/track?number=${trackingNumber}`);
-      }, 2000);
+      // Redirect to payment page for border fee
+      router.push(`/pay?tracking_id=${response.tracking_id}`);
+    } catch (error: any) {
+      console.error("Error creating parcel:", error);
+      toast.error(
+        error.message || "Failed to create shipment. Please try again."
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
-  const serviceOptions = [
-    {
-      id: "standard",
-      name: "Standard",
-      price: "$25",
-      eta: "5-7 business days",
-      icon: <Package className="w-5 h-5" />,
-    },
-    {
-      id: "express",
-      name: "Express",
-      price: "$38",
-      eta: "2-3 business days",
-      icon: <ChevronRight className="w-5 h-5" />,
-    },
-    {
-      id: "priority",
-      name: "Priority",
-      price: "$50",
-      eta: "1-2 business days",
-      icon: <DollarSign className="w-5 h-5" />,
-    },
+  // Calculate total declared value
+  const totalDeclaredValue = formData.contents.reduce(
+    (sum, item) => sum + item.value * item.quantity,
+    0
+  );
+
+  // List of supported destination countries
+  const countries = [
+    { code: "US", name: "United States" },
+    { code: "CA", name: "Canada" },
+    { code: "UK", name: "United Kingdom" },
+    { code: "AU", name: "Australia" },
+    { code: "DE", name: "Germany" },
+    { code: "FR", name: "France" },
+    { code: "JP", name: "Japan" },
+    { code: "SG", name: "Singapore" },
   ];
 
   return (
@@ -202,7 +321,7 @@ export default function CreatePage() {
           {/* Progress Steps */}
           <div className="mb-12">
             <div className="flex justify-between items-center mb-4">
-              {[1, 2, 3, 4].map((stepNum) => (
+              {[1, 2, 3].map((stepNum) => (
                 <div
                   key={stepNum}
                   className="flex flex-col items-center flex-1"
@@ -231,8 +350,6 @@ export default function CreatePage() {
                       ? "Addresses"
                       : stepNum === 2
                       ? "Package"
-                      : stepNum === 3
-                      ? "Service"
                       : "Review"}
                   </span>
                 </div>
@@ -241,7 +358,7 @@ export default function CreatePage() {
             <div className="h-2 bg-gray-200 rounded-full">
               <div
                 className="h-full bg-blue-600 rounded-full transition-all duration-300"
-                style={{ width: `${((step - 1) / 3) * 100}%` }}
+                style={{ width: `${((step - 1) / 2) * 100}%` }}
               ></div>
             </div>
           </div>
@@ -276,9 +393,9 @@ export default function CreatePage() {
                         </label>
                         <input
                           type="text"
-                          value={sender.name}
+                          value={formData.sender_name}
                           onChange={(e) =>
-                            handleSenderChange("name", e.target.value)
+                            handleInputChange("sender_name", e.target.value)
                           }
                           className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           placeholder="John Smith"
@@ -293,9 +410,9 @@ export default function CreatePage() {
                           </label>
                           <input
                             type="email"
-                            value={sender.email}
+                            value={formData.sender_email}
                             onChange={(e) =>
-                              handleSenderChange("email", e.target.value)
+                              handleInputChange("sender_email", e.target.value)
                             }
                             className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="john@example.com"
@@ -308,9 +425,9 @@ export default function CreatePage() {
                           </label>
                           <input
                             type="tel"
-                            value={sender.phone}
+                            value={formData.sender_phone}
                             onChange={(e) =>
-                              handleSenderChange("phone", e.target.value)
+                              handleInputChange("sender_phone", e.target.value)
                             }
                             className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="+1 234 567 8900"
@@ -321,70 +438,17 @@ export default function CreatePage() {
 
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Address *
+                          Address
                         </label>
                         <input
                           type="text"
-                          value={sender.address}
+                          value={formData.sender_address || ""}
                           onChange={(e) =>
-                            handleSenderChange("address", e.target.value)
+                            handleInputChange("sender_address", e.target.value)
                           }
                           className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="123 Main St"
-                          required
+                          placeholder="123 Main St, New York, NY 10001"
                         />
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            City *
-                          </label>
-                          <input
-                            type="text"
-                            value={sender.city}
-                            onChange={(e) =>
-                              handleSenderChange("city", e.target.value)
-                            }
-                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="New York"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Postal Code *
-                          </label>
-                          <input
-                            type="text"
-                            value={sender.postalCode}
-                            onChange={(e) =>
-                              handleSenderChange("postalCode", e.target.value)
-                            }
-                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="10001"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Country *
-                        </label>
-                        <select
-                          value={sender.country}
-                          onChange={(e) =>
-                            handleSenderChange("country", e.target.value)
-                          }
-                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        >
-                          <option value="United States">United States</option>
-                          <option value="Canada">Canada</option>
-                          <option value="United Kingdom">United Kingdom</option>
-                          <option value="Germany">Germany</option>
-                          <option value="Australia">Australia</option>
-                        </select>
                       </div>
                     </div>
                   </div>
@@ -407,9 +471,9 @@ export default function CreatePage() {
                         </label>
                         <input
                           type="text"
-                          value={recipient.name}
+                          value={formData.recipient_name}
                           onChange={(e) =>
-                            handleRecipientChange("name", e.target.value)
+                            handleInputChange("recipient_name", e.target.value)
                           }
                           className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           placeholder="Sarah Johnson"
@@ -424,9 +488,12 @@ export default function CreatePage() {
                           </label>
                           <input
                             type="email"
-                            value={recipient.email}
+                            value={formData.recipient_email}
                             onChange={(e) =>
-                              handleRecipientChange("email", e.target.value)
+                              handleInputChange(
+                                "recipient_email",
+                                e.target.value
+                              )
                             }
                             className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="sarah@example.com"
@@ -439,9 +506,12 @@ export default function CreatePage() {
                           </label>
                           <input
                             type="tel"
-                            value={recipient.phone}
+                            value={formData.recipient_phone}
                             onChange={(e) =>
-                              handleRecipientChange("phone", e.target.value)
+                              handleInputChange(
+                                "recipient_phone",
+                                e.target.value
+                              )
                             }
                             className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                             placeholder="+1 234 567 8900"
@@ -454,70 +524,40 @@ export default function CreatePage() {
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Address *
                         </label>
-                        <input
-                          type="text"
-                          value={recipient.address}
+                        <textarea
+                          value={formData.recipient_address}
                           onChange={(e) =>
-                            handleRecipientChange("address", e.target.value)
+                            handleInputChange(
+                              "recipient_address",
+                              e.target.value
+                            )
                           }
-                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="456 Oak Ave"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 h-24"
+                          placeholder="456 Oak Ave, Toronto, ON M5H 2N2"
                           required
                         />
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            City *
-                          </label>
-                          <input
-                            type="text"
-                            value={recipient.city}
-                            onChange={(e) =>
-                              handleRecipientChange("city", e.target.value)
-                            }
-                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="Toronto"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Postal Code *
-                          </label>
-                          <input
-                            type="text"
-                            value={recipient.postalCode}
-                            onChange={(e) =>
-                              handleRecipientChange(
-                                "postalCode",
-                                e.target.value
-                              )
-                            }
-                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="M5H 2N2"
-                            required
-                          />
-                        </div>
-                      </div>
-
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Country *
+                          Destination Country *
                         </label>
                         <select
-                          value={recipient.country}
+                          value={formData.destination_country}
                           onChange={(e) =>
-                            handleRecipientChange("country", e.target.value)
+                            handleInputChange(
+                              "destination_country",
+                              e.target.value
+                            )
                           }
                           className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                         >
-                          <option value="Canada">Canada</option>
-                          <option value="United States">United States</option>
-                          <option value="United Kingdom">United Kingdom</option>
-                          <option value="Germany">Germany</option>
-                          <option value="Australia">Australia</option>
+                          <option value="">Select a country</option>
+                          {countries.map((country) => (
+                            <option key={country.code} value={country.code}>
+                              {country.name}
+                            </option>
+                          ))}
                         </select>
                       </div>
                     </div>
@@ -536,394 +576,292 @@ export default function CreatePage() {
                   Describe what you're shipping
                 </p>
 
-                <div className="space-y-6">
+                <div className="space-y-8">
+                  {/* Weight */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Package Description *
-                    </label>
-                    <textarea
-                      value={packageInfo.description}
-                      onChange={(e) =>
-                        handlePackageChange("description", e.target.value)
-                      }
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 h-32"
-                      placeholder="Describe the contents of your package (e.g., Documents, Electronics, Clothing, etc.)"
-                      required
-                    />
-                  </div>
-
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Declared Value *
-                      </label>
-                      <div className="flex">
-                        <select
-                          value={packageInfo.currency}
-                          onChange={(e) =>
-                            handlePackageChange(
-                              "currency",
-                              e.target.value as any
-                            )
-                          }
-                          className="px-4 py-3 border border-gray-300 border-r-0 rounded-l-xl bg-gray-50"
-                        >
-                          <option value="USD">USD</option>
-                          <option value="CAD">CAD</option>
-                          <option value="EUR">EUR</option>
-                        </select>
-                        <input
-                          type="number"
-                          value={packageInfo.value}
-                          onChange={(e) =>
-                            handlePackageChange(
-                              "value",
-                              parseFloat(e.target.value)
-                            )
-                          }
-                          className="flex-1 px-4 py-3 border border-gray-300 rounded-r-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="100.00"
-                          min="0"
-                          step="0.01"
-                          required
-                        />
+                    <label className="block text-sm font-medium text-gray-700 mb-4">
+                      <div className="flex items-center">
+                        <Scale className="w-5 h-5 text-gray-400 mr-2" />
+                        Weight (kg) *
                       </div>
-                      <p className="text-xs text-gray-500 mt-2">
-                        For insurance and customs purposes
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Category
-                      </label>
-                      <select
-                        value={packageInfo.category}
+                    </label>
+                    <div className="flex items-center space-x-4">
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="100"
+                        step="0.1"
+                        value={formData.weight}
                         onChange={(e) =>
-                          handlePackageChange("category", e.target.value)
+                          handleInputChange(
+                            "weight",
+                            parseFloat(e.target.value)
+                          )
                         }
-                        className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="documents">Documents</option>
-                        <option value="electronics">Electronics</option>
-                        <option value="clothing">Clothing</option>
-                        <option value="books">Books</option>
-                        <option value="other">Other</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid md:grid-cols-3 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Weight *
-                      </label>
-                      <div className="flex">
+                        className="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <div className="w-32">
                         <input
                           type="number"
-                          value={packageInfo.weight}
+                          min="0.1"
+                          max="100"
+                          step="0.1"
+                          value={formData.weight}
                           onChange={(e) =>
-                            handlePackageChange(
+                            handleInputChange(
                               "weight",
                               parseFloat(e.target.value)
                             )
                           }
-                          className="flex-1 px-4 py-3 border border-gray-300 rounded-l-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="1.0"
-                          min="0.1"
-                          step="0.1"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           required
                         />
-                        <select
-                          value={packageInfo.weightUnit}
-                          onChange={(e) =>
-                            handlePackageChange(
-                              "weightUnit",
-                              e.target.value as any
-                            )
-                          }
-                          className="px-4 py-3 border border-gray-300 border-l-0 rounded-r-xl bg-gray-50"
-                        >
-                          <option value="kg">kg</option>
-                          <option value="lb">lb</option>
-                        </select>
                       </div>
+                      <span className="text-gray-600">kg</span>
                     </div>
+                    <p className="text-sm text-gray-500 mt-2">
+                      Minimum: 0.1kg, Maximum: 100kg
+                    </p>
+                  </div>
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {/* Dimensions */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-4">
+                      <div className="flex items-center">
+                        <Ruler className="w-5 h-5 text-gray-400 mr-2" />
                         Dimensions *
-                      </label>
-                      <div className="flex space-x-2">
+                      </div>
+                    </label>
+                    <div className="grid md:grid-cols-4 gap-4 mb-4">
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-2">
+                          Length
+                        </label>
+                        <div className="flex">
+                          <input
+                            type="number"
+                            min="1"
+                            step="0.1"
+                            value={formData.dimensions.length}
+                            onChange={(e) =>
+                              handleDimensionsChange(
+                                "length",
+                                parseFloat(e.target.value)
+                              )
+                            }
+                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                            required
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-2">
+                          Width
+                        </label>
                         <input
                           type="number"
-                          value={packageInfo.length}
-                          onChange={(e) =>
-                            handlePackageChange(
-                              "length",
-                              parseFloat(e.target.value)
-                            )
-                          }
-                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="L"
                           min="1"
-                          required
-                        />
-                        <span className="self-center text-gray-400">×</span>
-                        <input
-                          type="number"
-                          value={packageInfo.width}
+                          step="0.1"
+                          value={formData.dimensions.width}
                           onChange={(e) =>
-                            handlePackageChange(
+                            handleDimensionsChange(
                               "width",
                               parseFloat(e.target.value)
                             )
                           }
-                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="W"
-                          min="1"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           required
                         />
-                        <span className="self-center text-gray-400">×</span>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-2">
+                          Height
+                        </label>
                         <input
                           type="number"
-                          value={packageInfo.height}
+                          min="1"
+                          step="0.1"
+                          value={formData.dimensions.height}
                           onChange={(e) =>
-                            handlePackageChange(
+                            handleDimensionsChange(
                               "height",
                               parseFloat(e.target.value)
                             )
                           }
-                          className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="H"
-                          min="1"
+                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                           required
                         />
-                        <select
-                          value={packageInfo.dimensionUnit}
-                          onChange={(e) =>
-                            handlePackageChange(
-                              "dimensionUnit",
-                              e.target.value as any
-                            )
-                          }
-                          className="px-3 py-2 border border-gray-300 rounded-lg bg-gray-50"
-                        >
-                          <option value="cm">cm</option>
-                          <option value="in">in</option>
-                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-2">
+                          Unit
+                        </label>
+                        <div className="flex space-x-2">
+                          <button
+                            type="button"
+                            onClick={() => handleUnitChange("cm")}
+                            className={`flex-1 px-4 py-3 rounded-xl font-medium ${
+                              formData.dimensions.unit === "cm"
+                                ? "bg-blue-600 text-white"
+                                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                            }`}
+                          >
+                            cm
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUnitChange("in")}
+                            className={`flex-1 px-4 py-3 rounded-xl font-medium ${
+                              formData.dimensions.unit === "in"
+                                ? "bg-blue-600 text-white"
+                                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                            }`}
+                          >
+                            in
+                          </button>
+                        </div>
                       </div>
                     </div>
+                    <p className="text-sm text-gray-500">
+                      Current dimensions: {formData.dimensions.length} ×{" "}
+                      {formData.dimensions.width} × {formData.dimensions.height}{" "}
+                      {formData.dimensions.unit}
+                    </p>
                   </div>
-                </div>
-              </div>
-            )}
 
-            {/* Step 3: Service Options */}
-            {step === 3 && (
-              <div className="bg-white rounded-2xl shadow-lg p-8">
-                <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                  Shipping Service
-                </h2>
-                <p className="text-gray-600 mb-8">
-                  Choose your shipping options
-                </p>
-
-                <div className="space-y-6">
-                  {/* Service Type Selection */}
+                  {/* Contents */}
                   <div>
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      Service Type
-                    </h3>
-                    <div className="grid md:grid-cols-3 gap-4">
-                      {serviceOptions.map((option) => (
-                        <div
-                          key={option.id}
-                          className={`border-2 rounded-xl p-6 cursor-pointer transition-all ${
-                            service.serviceType === option.id
-                              ? "border-blue-500 bg-blue-50"
-                              : "border-gray-200 hover:border-gray-300"
-                          }`}
-                          onClick={() =>
-                            handleServiceChange("serviceType", option.id)
-                          }
-                        >
-                          <div className="flex items-center justify-between mb-4">
-                            <div
-                              className={`p-2 rounded-lg ${
-                                service.serviceType === option.id
-                                  ? "bg-blue-100"
-                                  : "bg-gray-100"
-                              }`}
-                            >
-                              {option.icon}
+                    <div className="flex items-center justify-between mb-4">
+                      <label className="block text-sm font-medium text-gray-700">
+                        <div className="flex items-center">
+                          <Package className="w-5 h-5 text-gray-400 mr-2" />
+                          Package Contents *
+                        </div>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={addContentItem}
+                        className="flex items-center px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
+                      >
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Item
+                      </button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {formData.contents.map((item, index) => (
+                        <div key={index} className="bg-gray-50 p-4 rounded-xl">
+                          <div className="flex justify-between items-start mb-4">
+                            <h4 className="font-medium text-gray-900">
+                              Item {index + 1}
+                            </h4>
+                            {formData.contents.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeContentItem(index)}
+                                className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="grid md:grid-cols-3 gap-4">
+                            <div>
+                              <label className="block text-sm text-gray-600 mb-2">
+                                Description *
+                              </label>
+                              <input
+                                type="text"
+                                value={item.description}
+                                onChange={(e) =>
+                                  handleContentChange(
+                                    index,
+                                    "description",
+                                    e.target.value
+                                  )
+                                }
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                placeholder="e.g., Documents, Electronics, etc."
+                                required
+                              />
                             </div>
-                            <div
-                              className={`px-3 py-1 rounded-full text-sm font-medium ${
-                                service.serviceType === option.id
-                                  ? "bg-blue-100 text-blue-600"
-                                  : "bg-gray-100 text-gray-600"
-                              }`}
-                            >
-                              {option.price}
+                            <div>
+                              <label className="block text-sm text-gray-600 mb-2">
+                                Quantity *
+                              </label>
+                              <input
+                                type="number"
+                                min="1"
+                                value={item.quantity}
+                                onChange={(e) =>
+                                  handleContentChange(
+                                    index,
+                                    "quantity",
+                                    parseInt(e.target.value)
+                                  )
+                                }
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm text-gray-600 mb-2">
+                                Value (USD) *
+                              </label>
+                              <div className="flex">
+                                <span className="px-3 py-2 bg-gray-100 border border-r-0 border-gray-300 rounded-l-lg">
+                                  $
+                                </span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={item.value}
+                                  onChange={(e) =>
+                                    handleContentChange(
+                                      index,
+                                      "value",
+                                      parseFloat(e.target.value)
+                                    )
+                                  }
+                                  className="flex-1 px-4 py-2 border border-gray-300 rounded-r-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                  required
+                                />
+                              </div>
                             </div>
                           </div>
-                          <h4 className="font-medium text-gray-900 mb-2">
-                            {option.name}
-                          </h4>
-                          <p className="text-sm text-gray-600">{option.eta}</p>
                         </div>
                       ))}
                     </div>
-                  </div>
 
-                  {/* Additional Services */}
-                  <div className="bg-gray-50 p-6 rounded-xl">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      Additional Services
-                    </h3>
-                    <div className="space-y-4">
-                      <label className="flex items-center justify-between cursor-pointer">
-                        <div className="flex items-center">
-                          <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                            <DollarSign className="w-4 h-4 text-blue-600" />
-                          </div>
-                          <div>
-                            <p className="font-medium text-gray-900">
-                              Insurance Coverage
-                            </p>
-                            <p className="text-sm text-gray-600">
-                              Protect your shipment up to ${packageInfo.value}
-                            </p>
-                          </div>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={service.insurance}
-                          onChange={(e) =>
-                            handleServiceChange("insurance", e.target.checked)
-                          }
-                          className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                      </label>
-
-                      <label className="flex items-center justify-between cursor-pointer">
-                        <div className="flex items-center">
-                          <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                            <FileText className="w-4 h-4 text-blue-600" />
-                          </div>
-                          <div>
-                            <p className="font-medium text-gray-900">
-                              Signature Required
-                            </p>
-                            <p className="text-sm text-gray-600">
-                              Recipient must sign for delivery
-                            </p>
-                          </div>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={service.signatureRequired}
-                          onChange={(e) =>
-                            handleServiceChange(
-                              "signatureRequired",
-                              e.target.checked
-                            )
-                          }
-                          className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                      </label>
-
-                      {sender.country !== recipient.country && (
-                        <label className="flex items-center justify-between cursor-pointer">
-                          <div className="flex items-center">
-                            <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center mr-3">
-                              <FileText className="w-4 h-4 text-blue-600" />
-                            </div>
-                            <div>
-                              <p className="font-medium text-gray-900">
-                                Customs Declaration
-                              </p>
-                              <p className="text-sm text-gray-600">
-                                Required for international shipments
-                              </p>
-                            </div>
-                          </div>
-                          <input
-                            type="checkbox"
-                            checked={service.customsDeclaration}
-                            onChange={(e) =>
-                              handleServiceChange(
-                                "customsDeclaration",
-                                e.target.checked
-                              )
-                            }
-                            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                            disabled
-                          />
-                        </label>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Price Summary */}
-                  <div className="bg-blue-50 p-6 rounded-xl">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      Price Summary
-                    </h3>
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Base shipping</span>
-                        <span>$25.00</span>
+                    <div className="mt-4 p-4 bg-blue-50 rounded-xl">
+                      <div className="flex justify-between items-center">
+                        <span className="font-medium text-gray-900">
+                          Total Declared Value:
+                        </span>
+                        <span className="text-2xl font-bold text-blue-600">
+                          ${totalDeclaredValue.toFixed(2)}
+                        </span>
                       </div>
-                      {service.serviceType === "express" && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Express service</span>
-                          <span>+$12.50</span>
-                        </div>
-                      )}
-                      {service.serviceType === "priority" && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">
-                            Priority service
-                          </span>
-                          <span>+$25.00</span>
-                        </div>
-                      )}
-                      {service.insurance && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Insurance</span>
-                          <span>+${(packageInfo.value * 0.01).toFixed(2)}</span>
-                        </div>
-                      )}
-                      {sender.country !== recipient.country && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">
-                            International fee
-                          </span>
-                          <span>+$15.00</span>
-                        </div>
-                      )}
-                      <div className="border-t border-gray-300 pt-2 mt-2">
-                        <div className="flex justify-between font-bold text-lg">
-                          <span>Total</span>
-                          <span>${calculatePrice()}</span>
-                        </div>
-                      </div>
+                      <p className="text-sm text-gray-600 mt-2">
+                        This value will be used for customs declaration and
+                        insurance purposes.
+                      </p>
                     </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Step 4: Review & Submit */}
-            {step === 4 && (
+            {/* Step 3: Review */}
+            {step === 3 && (
               <div className="bg-white rounded-2xl shadow-lg p-8">
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                  Review & Submit
+                  Review Your Shipment
                 </h2>
                 <p className="text-gray-600 mb-8">
-                  Review your shipment details before submitting
+                  Please review all information before submitting
                 </p>
 
                 <div className="space-y-8">
@@ -932,13 +870,14 @@ export default function CreatePage() {
                     <div className="border border-gray-200 rounded-xl p-6">
                       <h3 className="font-medium text-gray-900 mb-4">Sender</h3>
                       <div className="space-y-2">
-                        <p className="font-medium">{sender.name}</p>
-                        <p className="text-gray-600">{sender.address}</p>
-                        <p className="text-gray-600">
-                          {sender.city}, {sender.country} {sender.postalCode}
-                        </p>
-                        <p className="text-gray-600">{sender.email}</p>
-                        <p className="text-gray-600">{sender.phone}</p>
+                        <p className="font-medium">{formData.sender_name}</p>
+                        <p className="text-gray-600">{formData.sender_email}</p>
+                        <p className="text-gray-600">{formData.sender_phone}</p>
+                        {formData.sender_address && (
+                          <p className="text-gray-600">
+                            {formData.sender_address}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -947,14 +886,22 @@ export default function CreatePage() {
                         Recipient
                       </h3>
                       <div className="space-y-2">
-                        <p className="font-medium">{recipient.name}</p>
-                        <p className="text-gray-600">{recipient.address}</p>
+                        <p className="font-medium">{formData.recipient_name}</p>
                         <p className="text-gray-600">
-                          {recipient.city}, {recipient.country}{" "}
-                          {recipient.postalCode}
+                          {formData.recipient_email}
                         </p>
-                        <p className="text-gray-600">{recipient.email}</p>
-                        <p className="text-gray-600">{recipient.phone}</p>
+                        <p className="text-gray-600">
+                          {formData.recipient_phone}
+                        </p>
+                        <p className="text-gray-600">
+                          {formData.recipient_address}
+                        </p>
+                        <p className="text-gray-600">
+                          Destination:{" "}
+                          {countries.find(
+                            (c) => c.code === formData.destination_country
+                          )?.name || formData.destination_country}
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -965,83 +912,71 @@ export default function CreatePage() {
                     </h3>
                     <div className="grid md:grid-cols-3 gap-6">
                       <div>
-                        <p className="text-sm text-gray-600">Description</p>
-                        <p className="font-medium">{packageInfo.description}</p>
+                        <p className="text-sm text-gray-600">Weight</p>
+                        <p className="font-medium">{formData.weight} kg</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600">Dimensions</p>
                         <p className="font-medium">
-                          {packageInfo.length} × {packageInfo.width} ×{" "}
-                          {packageInfo.height} {packageInfo.dimensionUnit}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-600">Weight</p>
-                        <p className="font-medium">
-                          {packageInfo.weight} {packageInfo.weightUnit}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-4">
-                      <p className="text-sm text-gray-600">Value</p>
-                      <p className="font-medium">
-                        {packageInfo.currency} {packageInfo.value.toFixed(2)}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="border border-gray-200 rounded-xl p-6">
-                    <h3 className="font-medium text-gray-900 mb-4">
-                      Shipping Service
-                    </h3>
-                    <div className="grid md:grid-cols-2 gap-6">
-                      <div>
-                        <p className="text-sm text-gray-600">Service Type</p>
-                        <p className="font-medium capitalize">
-                          {service.serviceType} Shipping
+                          {formData.dimensions.length} ×{" "}
+                          {formData.dimensions.width} ×{" "}
+                          {formData.dimensions.height}{" "}
+                          {formData.dimensions.unit}
                         </p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600">
-                          Additional Services
+                          Total Declared Value
                         </p>
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          {service.insurance && (
-                            <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
-                              Insurance
-                            </span>
-                          )}
-                          {service.signatureRequired && (
-                            <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
-                              Signature Required
-                            </span>
-                          )}
-                          {service.customsDeclaration && (
-                            <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm">
-                              Customs Declaration
-                            </span>
-                          )}
-                        </div>
+                        <p className="font-medium">
+                          ${totalDeclaredValue.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-6">
+                      <h4 className="font-medium text-gray-900 mb-3">
+                        Contents:
+                      </h4>
+                      <div className="space-y-3">
+                        {formData.contents.map((item, index) => (
+                          <div
+                            key={index}
+                            className="flex justify-between items-center py-2 border-b border-gray-100"
+                          >
+                            <div>
+                              <p className="font-medium">{item.description}</p>
+                              <p className="text-sm text-gray-600">
+                                Quantity: {item.quantity}
+                              </p>
+                            </div>
+                            <p className="font-medium">
+                              ${(item.value * item.quantity).toFixed(2)}
+                            </p>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   </div>
 
-                  <div className="bg-blue-50 p-6 rounded-xl">
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <h3 className="font-medium text-gray-900">
-                          Total Cost
-                        </h3>
-                        <p className="text-gray-600">
-                          Including all taxes and fees
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-3xl font-bold text-gray-900">
-                          ${calculatePrice()}
-                        </p>
-                      </div>
-                    </div>
+                  {/* Important Notes */}
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6">
+                    <h3 className="font-medium text-yellow-900 mb-3">
+                      <FileText className="w-5 h-5 inline mr-2" />
+                      Important Information
+                    </h3>
+                    <ul className="space-y-2 text-sm text-yellow-800">
+                      <li>
+                        • Customs duties and taxes may apply for international
+                        shipments
+                      </li>
+                      <li>
+                        • The recipient is responsible for any customs fees
+                      </li>
+                      <li>• Insurance coverage is based on declared value</li>
+                      <li>• Prohibited items cannot be shipped</li>
+                      <li>• Delivery times are estimates and not guaranteed</li>
+                    </ul>
                   </div>
 
                   {/* Terms Agreement */}
@@ -1054,14 +989,15 @@ export default function CreatePage() {
                       />
                       <div>
                         <p className="font-medium text-gray-900">
-                          Terms & Conditions
+                          Terms & Conditions Agreement
                         </p>
                         <p className="text-sm text-gray-600 mt-1">
                           I agree to the SwiftTrack Terms of Service and confirm
                           that all information provided is accurate. I
                           understand that customs duties and taxes may apply for
                           international shipments and are the responsibility of
-                          the recipient.
+                          the recipient. I declare that the contents do not
+                          include any prohibited items.
                         </p>
                       </div>
                     </label>
@@ -1072,35 +1008,36 @@ export default function CreatePage() {
 
             {/* Navigation Buttons */}
             <div className="flex justify-between mt-8">
-              <button
-                type="button"
-                onClick={() => setStep(step - 1)}
-                disabled={step === 1}
-                className={`px-8 py-3 rounded-xl font-medium ${
-                  step === 1
-                    ? "text-gray-400 cursor-not-allowed"
-                    : "text-gray-700 hover:bg-gray-100"
-                }`}
-              >
-                Back
-              </button>
+              {step > 1 && (
+                <button
+                  type="button"
+                  onClick={handlePrevStep}
+                  className="px-8 py-3 text-gray-700 hover:bg-gray-100 rounded-xl font-medium"
+                >
+                  Back
+                </button>
+              )}
 
-              <button
-                type="submit"
-                disabled={loading}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-8 py-3 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <span className="flex items-center">
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-                    {step === 4 ? "Creating Shipment..." : "Processing..."}
-                  </span>
-                ) : step === 4 ? (
-                  "Create Shipment"
-                ) : (
-                  "Continue"
-                )}
-              </button>
+              <div className={`${step > 1 ? "ml-auto" : "w-full"}`}>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`bg-blue-600 hover:bg-blue-700 text-white font-medium px-8 py-3 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    step === 1 ? "w-full" : ""
+                  }`}
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center">
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                      {step === 3 ? "Creating Shipment..." : "Processing..."}
+                    </span>
+                  ) : step === 3 ? (
+                    "Create Shipment"
+                  ) : (
+                    "Continue"
+                  )}
+                </button>
+              </div>
             </div>
           </form>
         </div>

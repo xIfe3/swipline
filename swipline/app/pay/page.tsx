@@ -1,118 +1,164 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   CreditCard,
-  Wallet,
-  Building,
   Lock,
   CheckCircle,
   DollarSign,
   Shield,
+  Loader2,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { apiService } from "@/lib/api";
 
-interface PaymentMethod {
-  id: string;
-  type: "card" | "bank" | "wallet";
-  lastFour?: string;
-  bankName?: string;
-  walletType?: string;
-  isDefault: boolean;
-}
+// Import Stripe (you'll need to install @stripe/stripe-js)
+import { loadStripe } from "@stripe/stripe-js";
 
-interface InvoiceItem {
-  description: string;
-  amount: number;
-  quantity: number;
-}
+// Initialize Stripe
+const stripePromise = loadStripe(
+  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || "pk_test_..."
+);
 
 export default function PayPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(false);
-  const [selectedMethod, setSelectedMethod] = useState<string>("card");
-  const [saveCard, setSaveCard] = useState(true);
-  const [invoiceNumber] = useState(`INV-${Date.now().toString().slice(-8)}`);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [parcelData, setParcelData] = useState<any>(null);
+  const [paymentData, setPaymentData] = useState<any>(null);
 
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([
-    { id: "card1", type: "card", lastFour: "4242", isDefault: true },
-    { id: "bank1", type: "bank", bankName: "Chase Bank", isDefault: false },
-    { id: "wallet1", type: "wallet", walletType: "PayPal", isDefault: false },
-  ]);
+  // Get tracking ID from URL
+  const trackingId = searchParams.get("tracking_id");
 
-  const [invoiceItems] = useState<InvoiceItem[]>([
-    {
-      description: "Express International Shipping",
-      amount: 45.99,
-      quantity: 1,
-    },
-    { description: "Insurance Coverage", amount: 10.0, quantity: 1 },
-    { description: "Customs Clearance Fee", amount: 25.0, quantity: 1 },
-    { description: "Fuel Surcharge", amount: 5.5, quantity: 1 },
-  ]);
+  useEffect(() => {
+    if (trackingId) {
+      fetchParcelDetails(trackingId);
+    }
+  }, [trackingId]);
 
-  const [cardDetails, setCardDetails] = useState({
-    cardNumber: "",
-    expiry: "",
-    cvv: "",
-    name: "",
-  });
-
-  const subtotal = invoiceItems.reduce(
-    (sum, item) => sum + item.amount * item.quantity,
-    0
-  );
-  const tax = subtotal * 0.08;
-  const total = subtotal + tax;
-
-  const handleCardChange = (field: keyof typeof cardDetails, value: string) => {
-    setCardDetails({ ...cardDetails, [field]: value });
+  const fetchParcelDetails = async (trackingId: string) => {
+    try {
+      setLoading(true);
+      const parcel = await apiService.getParcel(trackingId);
+      setParcelData(parcel);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to fetch parcel details");
+      router.push("/track");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handlePayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-
-    // Validate card details
-    if (
-      selectedMethod === "card" &&
-      (!cardDetails.cardNumber ||
-        !cardDetails.expiry ||
-        !cardDetails.cvv ||
-        !cardDetails.name)
-    ) {
-      toast.error("Please fill in all card details");
-      setLoading(false);
+  const handleBorderFeePayment = async () => {
+    if (!trackingId || !parcelData) {
+      toast.error("No tracking information found");
       return;
     }
 
-    // Simulate API call to your payment endpoint
-    setTimeout(() => {
-      toast.success(
-        "Payment successful! Your shipment is now being processed."
+    if (parcelData.border_fee_paid) {
+      toast.error("Border fee already paid");
+      router.push(`/track?number=${trackingId}`);
+      return;
+    }
+
+    if (parcelData.status !== "at_border") {
+      toast.error("Parcel is not at border yet");
+      return;
+    }
+
+    try {
+      setPaymentLoading(true);
+
+      // Call your FastAPI payment endpoint
+      const paymentResponse = await apiService.createPayment({
+        tracking_id: trackingId,
+      });
+
+      setPaymentData(paymentResponse);
+
+      // Initialize Stripe payment
+      const stripe = await stripePromise;
+      if (!stripe) {
+        throw new Error("Stripe failed to load");
+      }
+
+      const { error } = await stripe.confirmCardPayment(
+        paymentResponse.client_secret,
+        {
+          payment_method: {
+            card: (await stripe
+              .createPaymentMethod({
+                type: "card",
+                card: document.getElementById("card-element") as any,
+              })
+              .then((result) => result.paymentMethod?.id)) as any,
+          },
+        }
       );
-      setLoading(false);
-      router.push("/dashboard");
-    }, 2000);
-  };
 
-  const formatCardNumber = (value: string) => {
-    const v = value.replace(/\s+/g, "").replace(/[^0-9]/gi, "");
-    const matches = v.match(/\d{4,16}/g);
-    const match = (matches && matches[0]) || "";
-    const parts = [];
+      if (error) {
+        throw new Error(error.message);
+      }
 
-    for (let i = 0, len = match.length; i < len; i += 4) {
-      parts.push(match.substring(i, i + 4));
-    }
+      toast.success("Payment successful! Border fee has been paid.");
 
-    if (parts.length) {
-      return parts.join(" ");
-    } else {
-      return value;
+      // Redirect to tracking page
+      setTimeout(() => {
+        router.push(`/track?number=${trackingId}`);
+      }, 2000);
+    } catch (error: any) {
+      console.error("Payment error:", error);
+      toast.error(error.message || "Payment failed. Please try again.");
+    } finally {
+      setPaymentLoading(false);
     }
   };
+
+  const handleShippingFeePayment = async () => {
+    if (!trackingId || !parcelData) {
+      toast.error("No tracking information found");
+      return;
+    }
+
+    // Implement shipping fee payment
+    toast.error("Shipping fee payment not implemented yet");
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 pt-20 pb-12 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
+          <p className="text-gray-600">Loading payment information...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!parcelData && !loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 pt-20 pb-12">
+        <div className="container mx-auto px-4">
+          <div className="max-w-2xl mx-auto text-center">
+            <h1 className="text-3xl font-bold text-gray-900 mb-4">
+              No Parcel Found
+            </h1>
+            <p className="text-gray-600 mb-8">
+              Please go back and create a shipment first.
+            </p>
+            <button
+              onClick={() => router.push("/create")}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-3 rounded-xl"
+            >
+              Create New Shipment
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 pt-20 pb-12">
@@ -130,331 +176,184 @@ export default function PayPage() {
           <div className="grid lg:grid-cols-3 gap-8">
             {/* Left Column - Invoice Details */}
             <div className="lg:col-span-2 space-y-8">
-              {/* Invoice Summary */}
+              {/* Shipment Summary */}
               <div className="bg-white rounded-2xl shadow-lg p-8">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-2xl font-bold text-gray-900">
-                    Invoice Summary
+                    Shipment Summary
                   </h2>
                   <div className="text-right">
-                    <p className="text-sm text-gray-600">Invoice #</p>
-                    <p className="font-medium">{invoiceNumber}</p>
+                    <p className="text-sm text-gray-600">Tracking #</p>
+                    <p className="font-medium">{parcelData?.tracking_id}</p>
+                  </div>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-6 mb-8">
+                  <div className="bg-gray-50 p-4 rounded-xl">
+                    <p className="text-sm text-gray-600 mb-1">Sender</p>
+                    <p className="font-medium">{parcelData?.sender_name}</p>
+                    <p className="text-sm text-gray-600">
+                      {parcelData?.sender_email}
+                    </p>
+                  </div>
+                  <div className="bg-gray-50 p-4 rounded-xl">
+                    <p className="text-sm text-gray-600 mb-1">Recipient</p>
+                    <p className="font-medium">{parcelData?.recipient_name}</p>
+                    <p className="text-sm text-gray-600">
+                      {parcelData?.recipient_email}
+                    </p>
                   </div>
                 </div>
 
                 <div className="space-y-4">
-                  {invoiceItems.map((item, index) => (
-                    <div
-                      key={index}
-                      className="flex justify-between items-center py-4 border-b border-gray-200"
-                    >
-                      <div>
-                        <p className="font-medium text-gray-900">
-                          {item.description}
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          Qty: {item.quantity}
-                        </p>
-                      </div>
-                      <p className="font-medium">${item.amount.toFixed(2)}</p>
+                  <div className="flex justify-between items-center py-4 border-b border-gray-200">
+                    <div>
+                      <p className="font-medium text-gray-900">Shipping Cost</p>
+                      <p className="text-sm text-gray-600">
+                        Based on weight and destination
+                      </p>
                     </div>
-                  ))}
-                </div>
+                    <p className="font-medium text-2xl">
+                      ${parcelData?.shipping_cost?.toFixed(2)}
+                    </p>
+                  </div>
 
-                <div className="mt-8 space-y-3">
-                  <div className="flex justify-between text-gray-600">
-                    <span>Subtotal</span>
-                    <span>${subtotal.toFixed(2)}</span>
+                  <div className="flex justify-between items-center py-4 border-b border-gray-200">
+                    <div>
+                      <p className="font-medium text-gray-900">Border Fee</p>
+                      <p className="text-sm text-gray-600">
+                        Customs clearance fee
+                      </p>
+                      {parcelData?.border_fee_paid && (
+                        <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-sm font-medium rounded-full mt-2">
+                          Already Paid
+                        </span>
+                      )}
+                    </div>
+                    <p className="font-medium text-2xl">
+                      ${parcelData?.border_fee?.toFixed(2)}
+                    </p>
                   </div>
-                  <div className="flex justify-between text-gray-600">
-                    <span>Tax (8%)</span>
-                    <span>${tax.toFixed(2)}</span>
-                  </div>
+
                   <div className="flex justify-between text-xl font-bold text-gray-900 pt-4 border-t border-gray-300">
-                    <span>Total</span>
-                    <span>${total.toFixed(2)}</span>
+                    <span>Total Due</span>
+                    <span>
+                      $
+                      {(
+                        (parcelData?.shipping_cost || 0) +
+                        (parcelData?.border_fee_paid
+                          ? 0
+                          : parcelData?.border_fee || 0)
+                      ).toFixed(2)}
+                    </span>
                   </div>
                 </div>
               </div>
 
-              {/* Payment Method Selection */}
+              {/* Payment Method */}
               <div className="bg-white rounded-2xl shadow-lg p-8">
                 <h2 className="text-2xl font-bold text-gray-900 mb-6">
                   Payment Method
                 </h2>
 
-                <div className="space-y-4 mb-8">
-                  {paymentMethods.map((method) => (
-                    <label
-                      key={method.id}
-                      className={`flex items-center justify-between p-4 border-2 rounded-xl cursor-pointer transition-all ${
-                        selectedMethod === method.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:border-gray-300"
-                      }`}
-                    >
-                      <div className="flex items-center">
-                        <input
-                          type="radio"
-                          name="paymentMethod"
-                          value={method.id}
-                          checked={selectedMethod === method.id}
-                          onChange={(e) => setSelectedMethod(e.target.value)}
-                          className="w-5 h-5 text-blue-600 focus:ring-blue-500"
-                        />
-                        <div className="ml-4 flex items-center">
-                          {method.type === "card" && (
-                            <>
-                              <CreditCard className="w-6 h-6 text-gray-600 mr-3" />
-                              <div>
-                                <p className="font-medium text-gray-900">
-                                  Credit Card
-                                </p>
-                                <p className="text-sm text-gray-600">
-                                  Ending in •••• {method.lastFour}
-                                </p>
-                              </div>
-                            </>
-                          )}
-                          {method.type === "bank" && (
-                            <>
-                              <Building className="w-6 h-6 text-gray-600 mr-3" />
-                              <div>
-                                <p className="font-medium text-gray-900">
-                                  Bank Transfer
-                                </p>
-                                <p className="text-sm text-gray-600">
-                                  {method.bankName}
-                                </p>
-                              </div>
-                            </>
-                          )}
-                          {method.type === "wallet" && (
-                            <>
-                              <Wallet className="w-6 h-6 text-gray-600 mr-3" />
-                              <div>
-                                <p className="font-medium text-gray-900">
-                                  Digital Wallet
-                                </p>
-                                <p className="text-sm text-gray-600">
-                                  {method.walletType}
-                                </p>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      {method.isDefault && (
-                        <span className="px-3 py-1 bg-green-100 text-green-800 text-sm font-medium rounded-full">
-                          Default
-                        </span>
-                      )}
-                    </label>
-                  ))}
+                {/* Card Element for Stripe */}
+                <div className="mb-8">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Card Details
+                  </label>
+                  <div className="border border-gray-300 rounded-xl p-4">
+                    <div id="card-element" className="p-2"></div>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-2">
+                    Your payment is securely processed by Stripe
+                  </p>
                 </div>
 
-                {/* Add New Card Form */}
-                {selectedMethod === "card" && (
-                  <div className="border-t border-gray-200 pt-8">
-                    <h3 className="text-lg font-medium text-gray-900 mb-6">
-                      Enter Card Details
-                    </h3>
+                {/* Payment Buttons */}
+                <div className="space-y-4">
+                  {!parcelData?.border_fee_paid && (
+                    <button
+                      onClick={handleBorderFeePayment}
+                      disabled={paymentLoading || parcelData?.border_fee_paid}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                    >
+                      {paymentLoading ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                          Processing Border Fee...
+                        </>
+                      ) : (
+                        <>
+                          <CreditCard className="w-5 h-5 mr-2" />
+                          Pay Border Fee (${parcelData?.border_fee?.toFixed(2)})
+                        </>
+                      )}
+                    </button>
+                  )}
 
-                    <div className="space-y-6">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Card Number *
-                        </label>
-                        <div className="relative">
-                          <CreditCard className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-                          <input
-                            type="text"
-                            value={cardDetails.cardNumber}
-                            onChange={(e) =>
-                              handleCardChange(
-                                "cardNumber",
-                                formatCardNumber(e.target.value)
-                              )
-                            }
-                            className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="1234 5678 9012 3456"
-                            maxLength={19}
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid md:grid-cols-2 gap-6">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Expiry Date *
-                          </label>
-                          <input
-                            type="text"
-                            value={cardDetails.expiry}
-                            onChange={(e) =>
-                              handleCardChange("expiry", e.target.value)
-                            }
-                            className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                            placeholder="MM/YY"
-                            maxLength={5}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            CVV *
-                          </label>
-                          <div className="relative">
-                            <Lock className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-                            <input
-                              type="text"
-                              value={cardDetails.cvv}
-                              onChange={(e) =>
-                                handleCardChange(
-                                  "cvv",
-                                  e.target.value.replace(/\D/g, "")
-                                )
-                              }
-                              className="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                              placeholder="123"
-                              maxLength={4}
-                              required
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Name on Card *
-                        </label>
-                        <input
-                          type="text"
-                          value={cardDetails.name}
-                          onChange={(e) =>
-                            handleCardChange("name", e.target.value)
-                          }
-                          className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                          placeholder="John Smith"
-                          required
-                        />
-                      </div>
-
-                      <label className="flex items-center cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={saveCard}
-                          onChange={(e) => setSaveCard(e.target.checked)}
-                          className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                        <span className="ml-2 text-gray-700">
-                          Save this card for future payments
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {/* Bank Transfer Info */}
-                {selectedMethod === "bank1" && (
-                  <div className="border-t border-gray-200 pt-8">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      Bank Transfer Instructions
-                    </h3>
-                    <div className="bg-gray-50 p-6 rounded-xl space-y-3">
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Bank Name:</span>
-                        <span className="font-medium">Chase Bank</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Account Number:</span>
-                        <span className="font-medium">•••• 6789</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Routing Number:</span>
-                        <span className="font-medium">021000021</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Reference:</span>
-                        <span className="font-medium">{invoiceNumber}</span>
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-4">
-                      Please include the invoice number in the transfer
-                      reference. Payment may take 1-2 business days to process.
-                    </p>
-                  </div>
-                )}
-
-                {/* Wallet Payment */}
-                {selectedMethod === "wallet1" && (
-                  <div className="border-t border-gray-200 pt-8">
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">
-                      Pay with PayPal
-                    </h3>
-                    <div className="bg-gray-50 p-6 rounded-xl">
-                      <p className="text-gray-600 mb-4">
-                        You will be redirected to PayPal to complete your
-                        payment securely.
-                      </p>
-                      <button className="w-full bg-yellow-500 hover:bg-yellow-600 text-white font-medium py-3 px-6 rounded-xl transition-colors">
-                        Continue with PayPal
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  <button
+                    onClick={handleShippingFeePayment}
+                    disabled={paymentLoading}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                  >
+                    <DollarSign className="w-5 h-5 mr-2" />
+                    Pay Shipping Fee (${parcelData?.shipping_cost?.toFixed(2)})
+                  </button>
+                </div>
               </div>
             </div>
 
             {/* Right Column - Payment Summary & Actions */}
             <div className="space-y-8">
-              {/* Order Summary */}
+              {/* Payment Summary */}
               <div className="bg-white rounded-2xl shadow-lg p-8">
                 <h2 className="text-xl font-bold text-gray-900 mb-6">
-                  Order Summary
+                  Payment Summary
                 </h2>
 
                 <div className="space-y-4">
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Subtotal</span>
-                    <span>${subtotal.toFixed(2)}</span>
+                    <span className="text-gray-600">Shipping Cost</span>
+                    <span>${parcelData?.shipping_cost?.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Tax</span>
-                    <span>${tax.toFixed(2)}</span>
+                    <span className="text-gray-600">Border Fee</span>
+                    <span
+                      className={
+                        parcelData?.border_fee_paid ? "text-green-600" : ""
+                      }
+                    >
+                      ${parcelData?.border_fee?.toFixed(2)}
+                      {parcelData?.border_fee_paid && " (Paid)"}
+                    </span>
                   </div>
                   <div className="border-t border-gray-300 pt-4">
                     <div className="flex justify-between text-lg font-bold">
                       <span>Total</span>
-                      <span>${total.toFixed(2)}</span>
+                      <span>
+                        $
+                        {(
+                          (parcelData?.shipping_cost || 0) +
+                          (parcelData?.border_fee_paid
+                            ? 0
+                            : parcelData?.border_fee || 0)
+                        ).toFixed(2)}
+                      </span>
                     </div>
-                    <p className="text-sm text-gray-600 mt-2">USD</p>
                   </div>
                 </div>
 
-                <form onSubmit={handlePayment} className="mt-8">
+                <div className="mt-8">
                   <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-4 px-6 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+                    onClick={() => router.push(`/track?number=${trackingId}`)}
+                    className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium py-3 px-6 rounded-xl transition-colors"
                   >
-                    {loading ? (
-                      <>
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="w-5 h-5 mr-2" />
-                        Pay ${total.toFixed(2)}
-                      </>
-                    )}
+                    Track Shipment Instead
                   </button>
-                </form>
+                </div>
 
                 <p className="text-xs text-gray-500 text-center mt-4">
-                  By completing this payment, you agree to our Terms of Service
+                  By completing payment, you agree to our Terms of Service
                 </p>
               </div>
 
@@ -474,7 +373,8 @@ export default function PayPage() {
                         Bank-Level Security
                       </h4>
                       <p className="text-sm text-gray-600 mt-1">
-                        All payments are encrypted and processed securely
+                        All payments are encrypted and processed securely by
+                        Stripe
                       </p>
                     </div>
                   </div>
@@ -495,14 +395,14 @@ export default function PayPage() {
 
                   <div className="flex items-start">
                     <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center mr-3">
-                      <DollarSign className="w-5 h-5 text-purple-600" />
+                      <Lock className="w-5 h-5 text-purple-600" />
                     </div>
                     <div>
                       <h4 className="font-medium text-gray-900">
-                        No Hidden Fees
+                        No Card Storage
                       </h4>
                       <p className="text-sm text-gray-600 mt-1">
-                        The price you see is the price you pay
+                        We never store your credit card information
                       </p>
                     </div>
                   </div>
@@ -525,12 +425,9 @@ export default function PayPage() {
             </div>
           </div>
 
-          {/* Payment Methods Logos */}
+          {/* Payment Security Footer */}
           <div className="mt-12 text-center">
-            <p className="text-gray-600 mb-6">
-              We accept all major payment methods
-            </p>
-            <div className="flex flex-wrap justify-center items-center gap-8">
+            <div className="flex flex-wrap justify-center items-center gap-8 mb-6">
               <div className="w-16 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
                 <span className="font-bold text-gray-700">VISA</span>
               </div>
@@ -541,12 +438,12 @@ export default function PayPage() {
                 <span className="font-bold text-gray-700">AMEX</span>
               </div>
               <div className="w-16 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-                <span className="font-bold text-gray-700">PP</span>
-              </div>
-              <div className="w-16 h-10 bg-gray-100 rounded-lg flex items-center justify-center">
-                <span className="font-bold text-gray-700">Apple Pay</span>
+                <span className="font-bold text-gray-700">Discover</span>
               </div>
             </div>
+            <p className="text-sm text-gray-600">
+              Your payment is secured with 256-bit SSL encryption
+            </p>
           </div>
         </div>
       </div>
